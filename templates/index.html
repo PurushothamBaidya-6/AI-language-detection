@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI Language Detection</title>
+<style>
+:root{--bg:#f7f8fb;--card:#fff;--ink:#0f172a;--muted:#5b6578;--line:#e2e6ee;--blue:#2563eb;--green:#15803d;--gbg:#ecfdf3;--red:#b91c1c}
+@media (prefers-color-scheme:dark){:root{--bg:#0c111c;--card:#131a29;--ink:#eef2fb;--muted:#9aa6bd;--line:#232d42;--blue:#6ea0ff;--green:#4ade80;--gbg:#10261b;--red:#f87171}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:17px/1.6 system-ui,-apple-system,"Segoe UI",sans-serif}
+header{background:#0a0e17;color:#f4f7ff;padding:48px 24px}
+header div,main{max-width:760px;margin:0 auto}
+h1{margin:0 0 8px;font-size:clamp(32px,6vw,52px);letter-spacing:-.03em;line-height:1.05}
+header p{margin:0;color:#9aa6bd}
+main{padding:28px 24px 60px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:22px}
+.tabs{display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap}
+button,select,input,textarea{font:inherit;color:inherit}
+.tab{padding:9px 18px;border-radius:99px;border:1px solid var(--line);background:var(--card);font-weight:700;cursor:pointer}
+.tab[aria-selected=true]{background:var(--blue);border-color:var(--blue);color:#fff}
+.btn{padding:10px 20px;border-radius:10px;border:0;background:var(--blue);color:#fff;font-weight:700;cursor:pointer}
+.btn.alt{background:var(--card);color:var(--ink);border:1px solid var(--line)}
+.btn:disabled{opacity:.5;cursor:wait}
+textarea,select{width:100%;padding:12px;border-radius:10px;border:1px solid var(--line);background:var(--bg)}
+textarea{min-height:100px;resize:vertical}
+.acts{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:12px}
+.panel[hidden]{display:none}
+label{font-weight:700;display:block;margin:10px 0 6px}
+.note{color:var(--muted);font-size:14px;margin:8px 0 0}
+.err{color:var(--red);margin:14px 0 0}
+.res{display:grid;gap:10px;margin-top:16px}
+.f{border:1px solid var(--line);border-radius:10px;padding:12px 14px;background:var(--bg)}
+.f.big{border-color:var(--green);background:var(--gbg)}
+.f small{display:block;color:var(--muted);font-weight:700}
+.f p{margin:0;white-space:pre-wrap}
+img{max-width:100%;max-height:240px;border-radius:10px;margin-top:10px;display:none}
+:focus-visible{outline:3px solid #38bdf8;outline-offset:2px}
+</style>
+</head>
+<body>
+<header><div><h1>AI Language Detection</h1><p>Detect the language of text, speech or an image, and get the English translation.</p></div></header>
+<main>
+<div class="card">
+  <div class="tabs" role="tablist">
+    <button class="tab" role="tab" aria-selected="true" data-p="p-text">Text</button>
+    <button class="tab" role="tab" aria-selected="false" data-p="p-speech">Speech</button>
+    <button class="tab" role="tab" aria-selected="false" data-p="p-image">Image</button>
+  </div>
+
+  <div class="panel" id="p-text">
+    <label for="t">Text in any language</label>
+    <textarea id="t" placeholder="Bonjour tout le monde"></textarea>
+    <div class="acts"><button class="btn" id="go-text">Detect &amp; translate</button></div>
+  </div>
+
+  <div class="panel" id="p-speech" hidden>
+    <div class="acts" style="margin-top:0">
+      <button class="btn alt" id="rec">Record</button>
+      <span class="note" id="rec-state" style="margin:0">Record your voice or upload an audio file.</span>
+    </div>
+    <label for="aud">Or upload audio (mp3, wav, m4a, webm)</label>
+    <input type="file" id="aud" accept="audio/*">
+    <audio id="player" controls style="width:100%;margin-top:12px;display:none"></audio>
+    <div class="acts"><button class="btn" id="go-speech">Detect &amp; translate</button></div>
+    <p class="note">The first request loads the speech model and can take a minute.</p>
+  </div>
+
+  <div class="panel" id="p-image" hidden>
+    <label for="grp">Script in the image</label>
+    <select id="grp">
+      {% for g in groups %}<option value="{{ g }}">{{ g|capitalize }}</option>{% endfor %}
+    </select>
+    <label for="img">Photo or sign</label>
+    <input type="file" id="img" accept="image/*">
+    <img id="prev" alt="Preview of the chosen image">
+    <div class="acts"><button class="btn" id="go-image">Read, detect &amp; translate</button></div>
+    <p class="note">The first request downloads the OCR model for that script.</p>
+  </div>
+
+  <p class="err" id="err" role="alert"></p>
+  <div class="res" id="res" aria-live="polite"></div>
+</div>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const err = $('err'), res = $('res');
+let audioBlob = null, recorder = null, chunks = [];
+
+document.querySelectorAll('.tab').forEach(b => b.onclick = () => {
+  document.querySelectorAll('.tab').forEach(x => x.setAttribute('aria-selected', x === b));
+  document.querySelectorAll('.panel').forEach(p => p.hidden = p.id !== b.dataset.p);
+  err.textContent = ''; res.innerHTML = '';
+});
+
+function show(label, text, big) {
+  const d = document.createElement('div'); d.className = 'f' + (big ? ' big' : '');
+  const s = document.createElement('small'); s.textContent = label;
+  const p = document.createElement('p'); p.textContent = text;
+  d.append(s, p); res.append(d);
+}
+
+async function call(btn, url, options) {
+  err.textContent = ''; res.innerHTML = '';
+  const old = btn.textContent; btn.disabled = true; btn.textContent = 'Working…';
+  try {
+    const r = await fetch(url, options);
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || 'Request failed');
+    show('Detected text', j.original);
+    show('Detected language', `${j.language} (${j.code})`);
+    show('English translation', j.english, true);
+  } catch (e) { err.textContent = e.message; }
+  btn.disabled = false; btn.textContent = old;
+}
+
+$('go-text').onclick = function () {
+  const text = $('t').value.trim();
+  if (!text) { err.textContent = 'Enter some text first.'; return; }
+  call(this, '/api/text', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({text})});
+};
+
+function setAudio(blob) {
+  audioBlob = blob; const p = $('player'); p.src = URL.createObjectURL(blob); p.style.display = 'block';
+}
+$('aud').onchange = e => { if (e.target.files[0]) setAudio(e.target.files[0]); };
+$('rec').onclick = async function () {
+  if (recorder && recorder.state === 'recording') { recorder.stop(); return; }
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({audio: true});
+    recorder = new MediaRecorder(stream); chunks = [];
+    recorder.ondataavailable = e => chunks.push(e.data);
+    recorder.onstop = () => { stream.getTracks().forEach(t => t.stop()); setAudio(new Blob(chunks, {type: recorder.mimeType}));
+      this.textContent = 'Record'; $('rec-state').textContent = 'Recorded. Press Detect & translate.'; };
+    recorder.start(); this.textContent = 'Stop'; $('rec-state').textContent = 'Recording…';
+  } catch (e) { err.textContent = 'Microphone unavailable. Allow access, or upload an audio file. (Recording needs https or localhost.)'; }
+};
+$('go-speech').onclick = function () {
+  if (!audioBlob) { err.textContent = 'Record or upload audio first.'; return; }
+  const fd = new FormData(); fd.append('audio', audioBlob, audioBlob.name || 'voice.webm');
+  call(this, '/api/speech', {method: 'POST', body: fd});
+};
+
+$('img').onchange = e => {
+  const f = e.target.files[0]; if (!f) return;
+  const p = $('prev'); p.src = URL.createObjectURL(f); p.style.display = 'block';
+};
+$('go-image').onclick = function () {
+  const f = $('img').files[0];
+  if (!f) { err.textContent = 'Choose an image first.'; return; }
+  const fd = new FormData(); fd.append('image', f); fd.append('group', $('grp').value);
+  call(this, '/api/image', {method: 'POST', body: fd});
+};
+</script>
+</body>
+</html>
